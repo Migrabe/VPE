@@ -1,982 +1,823 @@
-// Client-side logic for VPE Thin UI - Main Logic Module
-// Enhanced with advanced features and improved functionality
-
-class VPEClient {
-    constructor() {
-        this.ws = null;
-        this.isConnected = false;
-        this.isGenerating = false;
-        this.currentGenerationId = null;
-        this.config = {};
-        this.state = {
-            prompt: '',
-            negativePrompt: '',
-            seed: '',
-            cfgScale: 7,
-            steps: 28,
-            sampler: 'Euler a',
-            aspectRatio: '1:1',
-            quality: 'High',
-            batchMode: false,
-            batchSize: 1,
-            stylePreset: 'realistic',
-            template: null,
-            history: [],
-            savedConfigs: []
-        };
-
-        this.init();
-    }
-
-    async init() {
-        try {
-            await this.loadConfig();
-            this.setupEventListeners();
-            this.setupWebSocket();
-            this.loadState();
-            this.renderUI();
-            this.updateUI();
-        } catch (error) {
-            console.error('Initialization error:', error);
-            this.showError('Failed to initialize client');
-        }
-    }
-
-    async loadConfig() {
-        try {
-            const results = await Promise.allSettled([
-                fetch('/config/prompt-templates.json').then(r => r.json()),
-                fetch('/config/style-presets.json').then(r => r.json()),
-                fetch('/config/ui-buttons.json').then(r => r.json())
-            ]);
-
-            this.config = {
-                templates: results[0].status === 'fulfilled' ? results[0].value : [],
-                styles: results[1].status === 'fulfilled' ? results[1].value : [],
-                buttons: results[2].status === 'fulfilled' ? results[2].value : {}
-            };
-
-            results.forEach((r, i) => {
-                if (r.status === 'rejected') {
-                    const names = ['templates', 'styles', 'buttons'];
-                    console.warn(`Failed to load ${names[i]} config:`, r.reason);
-                }
-            });
-        } catch (error) {
-            console.error('Failed to load config:', error);
-            this.config = { templates: [], styles: [], buttons: {} };
-            this.showError('Failed to load configuration files');
-        }
-    }
-
-    setupEventListeners() {
-        // Form controls
-        const promptInput = document.getElementById('prompt');
-        const negativePromptInput = document.getElementById('negative-prompt');
-        const seedInput = document.getElementById('seed');
-        const cfgScaleInput = document.getElementById('cfg-scale');
-        const stepsInput = document.getElementById('steps');
-        const samplerSelect = document.getElementById('sampler');
-        const aspectRatioSelect = document.getElementById('aspect-ratio');
-        const qualitySelect = document.getElementById('quality');
-        const batchModeToggle = document.getElementById('batch-mode');
-        const batchSizeInput = document.getElementById('batch-size');
-
-        // Event listeners
-        promptInput?.addEventListener('input', (e) => {
-            this.state.prompt = e.target.value;
-            this.saveState();
-        });
-
-        negativePromptInput?.addEventListener('input', (e) => {
-            this.state.negativePrompt = e.target.value;
-            this.saveState();
-        });
-
-        seedInput?.addEventListener('input', (e) => {
-            this.state.seed = e.target.value;
-            this.saveState();
-        });
-
-        cfgScaleInput?.addEventListener('input', (e) => {
-            this.state.cfgScale = parseFloat(e.target.value);
-            this.updateCfgScaleLabel();
-            this.saveState();
-        });
-
-        stepsInput?.addEventListener('input', (e) => {
-            this.state.steps = parseInt(e.target.value);
-            this.updateStepsLabel();
-            this.saveState();
-        });
-
-        samplerSelect?.addEventListener('change', (e) => {
-            this.state.sampler = e.target.value;
-            this.saveState();
-        });
-
-        aspectRatioSelect?.addEventListener('change', (e) => {
-            this.state.aspectRatio = e.target.value;
-            this.saveState();
-        });
-
-        qualitySelect?.addEventListener('change', (e) => {
-            this.state.quality = e.target.value;
-            this.applyQualitySettings();
-            this.saveState();
-        });
-
-        batchModeToggle?.addEventListener('change', (e) => {
-            this.state.batchMode = e.target.checked;
-            this.updateBatchUI();
-            this.saveState();
-        });
-
-        batchSizeInput?.addEventListener('input', (e) => {
-            this.state.batchSize = parseInt(e.target.value);
-            this.saveState();
-        });
-
-        // Keyboard shortcuts
-        document.addEventListener('keydown', (e) => {
-            if (e.ctrlKey || e.metaKey) {
-                switch (e.key) {
-                    case 'Enter':
-                        e.preventDefault();
-                        this.generateImage();
-                        break;
-                    case 's':
-                        e.preventDefault();
-                        this.saveCurrentConfig();
-                        break;
-                    case 'l':
-                        e.preventDefault();
-                        this.loadConfigFromStorage();
-                        break;
-                    case 'e':
-                        e.preventDefault();
-                        this.exportConfig();
-                        break;
-                    case 'i':
-                        e.preventDefault();
-                        this.importConfig();
-                        break;
-                }
-            }
-        });
-    }
-
-    setupWebSocket() {
-        this._wsReconnectAttempts = 0;
-        this._wsMaxReconnect = 5;
-        this._wsReconnectDelay = 2000;
-        this._connectWebSocket();
-    }
-
-    _connectWebSocket() {
-        try {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const host = window.location.hostname || 'localhost';
-            const port = window.location.port || '3000';
-            this.ws = new WebSocket(`${protocol}//${host}:${port}`);
-
-            this.ws.onopen = () => {
-                this.isConnected = true;
-                this._wsReconnectAttempts = 0;
-                this.updateConnectionStatus(true);
-                console.log('WebSocket connected');
-            };
-
-            this.ws.onmessage = (event) => {
-                try {
-                    this.handleMessage(JSON.parse(event.data));
-                } catch (err) {
-                    console.error('Failed to parse WebSocket message:', err);
-                }
-            };
-
-            this.ws.onclose = () => {
-                this.isConnected = false;
-                this.updateConnectionStatus(false);
-                console.log('WebSocket disconnected');
-                this._scheduleReconnect();
-            };
-
-            this.ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-            };
-        } catch (error) {
-            console.error('Failed to setup WebSocket:', error);
-            this._scheduleReconnect();
-        }
-    }
-
-    _scheduleReconnect() {
-        if (this._wsReconnectAttempts >= this._wsMaxReconnect) {
-            console.warn('WebSocket: max reconnect attempts reached');
-            return;
-        }
-        this._wsReconnectAttempts++;
-        const delay = this._wsReconnectDelay * this._wsReconnectAttempts;
-        console.log(`WebSocket: reconnecting in ${delay}ms (attempt ${this._wsReconnectAttempts})`);
-        setTimeout(() => this._connectWebSocket(), delay);
-    }
-
-    handleMessage(message) {
-        switch (message.type) {
-            case 'generation_started':
-                this.handleGenerationStarted(message);
-                break;
-            case 'generation_progress':
-                this.handleGenerationProgress(message);
-                break;
-            case 'generation_completed':
-                this.handleGenerationCompleted(message);
-                break;
-            case 'generation_error':
-                this.handleGenerationError(message);
-                break;
-            case 'generation_stopped':
-                this.handleGenerationStopped(message);
-                break;
-            default:
-                console.log('Unknown message type:', message.type);
-        }
-    }
-
-    handleGenerationStarted(message) {
-        this.isGenerating = true;
-        this.currentGenerationId = message.generationId;
-        this.updateGenerationUI(true);
-        this.addToHistory(message.prompt, message.settings);
-    }
-
-    handleGenerationProgress(message) {
-        const progress = document.getElementById('progress');
-        if (progress) {
-            progress.style.width = `${message.progress}%`;
-        }
-    }
-
-    handleGenerationCompleted(message) {
-        this.isGenerating = false;
-        this.updateGenerationUI(false);
-
-        const resultContainer = document.getElementById('result-container');
-        if (resultContainer) {
-            const img = document.createElement('img');
-            img.src = `data:image/png;base64,${message.image}`;
-            img.style.maxWidth = '100%';
-            img.style.height = 'auto';
-            img.style.borderRadius = '8px';
-            img.style.boxShadow = '0 4px 6px rgba(0,0,0,0.1)';
-
-            const resultDiv = document.createElement('div');
-            resultDiv.style.marginBottom = '20px';
-            resultDiv.appendChild(img);
-
-            // Add download button
-            const downloadBtn = document.createElement('button');
-            downloadBtn.className = 'btn btn-success btn-sm';
-            downloadBtn.innerHTML = '<i class="fas fa-download"></i> Download';
-            downloadBtn.onclick = () => this.downloadImage(message.image, message.prompt);
-            resultDiv.appendChild(downloadBtn);
-
-            resultContainer.insertBefore(resultDiv, resultContainer.firstChild);
-        }
-    }
-
-    handleGenerationError(message) {
-        this.isGenerating = false;
-        this.updateGenerationUI(false);
-        this.showError(`Generation error: ${message.error}`);
-    }
-
-    handleGenerationStopped(message) {
-        this.isGenerating = false;
-        this.updateGenerationUI(false);
-        this.showInfo('Generation stopped by user');
-    }
-
-    updateCfgScaleLabel() {
-        const label = document.getElementById('cfg-scale-label');
-        if (label) {
-            label.textContent = `CFG Scale: ${this.state.cfgScale}`;
-        }
-    }
-
-    updateStepsLabel() {
-        const label = document.getElementById('steps-label');
-        if (label) {
-            label.textContent = `Steps: ${this.state.steps}`;
-        }
-    }
-
-    updateBatchUI() {
-        const batchSizeContainer = document.getElementById('batch-size-container');
-        if (batchSizeContainer) {
-            batchSizeContainer.style.display = this.state.batchMode ? 'block' : 'none';
-        }
-    }
-
-    updateConnectionStatus(connected) {
-        const status = document.getElementById('connection-status');
-        if (status) {
-            status.textContent = connected ? 'Connected' : 'Disconnected';
-            status.className = connected ? 'text-success' : 'text-danger';
-        }
-    }
-
-    updateGenerationUI(isGenerating) {
-        const generateBtn = document.getElementById('generate');
-        const stopBtn = document.getElementById('stop');
-        const progressContainer = document.getElementById('progress-container');
-
-        if (generateBtn) {
-            generateBtn.disabled = isGenerating;
-        }
-
-        if (stopBtn) {
-            stopBtn.disabled = !isGenerating;
-        }
-
-        if (progressContainer) {
-            progressContainer.style.display = isGenerating ? 'block' : 'none';
-        }
-    }
-
-    addToHistory(prompt, settings) {
-        const historyEntry = {
-            timestamp: new Date().toISOString(),
-            prompt: prompt,
-            settings: settings,
-            id: Date.now()
-        };
-
-        this.state.history.unshift(historyEntry);
-        if (this.state.history.length > 50) {
-            this.state.history = this.state.history.slice(0, 50);
-        }
-
-        this.saveState();
-    }
-
-    saveState() {
-        try {
-            localStorage.setItem('vpe_client_state', JSON.stringify(this.state));
-        } catch (error) {
-            console.error('Failed to save state:', error);
-        }
-    }
-
-    loadState() {
-        try {
-            const savedState = localStorage.getItem('vpe_client_state');
-            if (savedState) {
-                const parsed = JSON.parse(savedState);
-                // Validate key fields before merging
-                const defaults = {
-                    prompt: '', negativePrompt: '', seed: '',
-                    cfgScale: 7, steps: 28, sampler: 'Euler a',
-                    aspectRatio: '1:1', quality: 'High',
-                    batchMode: false, batchSize: 1,
-                    stylePreset: 'realistic', template: null,
-                    history: [], savedConfigs: []
-                };
-                const validated = {};
-                for (const [key, defaultVal] of Object.entries(defaults)) {
-                    if (key in parsed && typeof parsed[key] === typeof defaultVal) {
-                        validated[key] = parsed[key];
-                    } else if (key in parsed && defaultVal === null) {
-                        validated[key] = parsed[key];
-                    }
-                }
-                this.state = { ...this.state, ...validated };
-            }
-        } catch (error) {
-            console.error('Failed to load state:', error);
-            localStorage.removeItem('vpe_client_state');
-        }
-    }
-
-    showError(message) {
-        const alertContainer = document.getElementById('alert-container');
-        if (alertContainer) {
-            const alert = document.createElement('div');
-            alert.className = 'alert alert-danger alert-dismissible fade show';
-            alert.innerHTML = `
-                <strong>Error:</strong> ${message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            `;
-            alertContainer.appendChild(alert);
-
-            // Auto-dismiss after 5 seconds
-            setTimeout(() => {
-                alert.remove();
-            }, 5000);
-        }
-    }
-
-    showInfo(message) {
-        const alertContainer = document.getElementById('alert-container');
-        if (alertContainer) {
-            const alert = document.createElement('div');
-            alert.className = 'alert alert-info alert-dismissible fade show';
-            alert.innerHTML = `
-                <strong>Info:</strong> ${message}
-                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-            `;
-            alertContainer.appendChild(alert);
-
-            // Auto-dismiss after 3 seconds
-            setTimeout(() => {
-                alert.remove();
-            }, 3000);
-        }
-    }
-
-    downloadImage(base64Data, prompt) {
-        const link = document.createElement('a');
-        link.download = `vpe_${Date.now()}.png`;
-        link.href = `data:image/png;base64,${base64Data}`;
-        link.click();
-    }
-
-    renderUI() {
-        // Render template select options
-        const templateSelect = document.getElementById('template-select');
-        if (templateSelect && this.config.templates) {
-            templateSelect.innerHTML = '<option value="">Select Template</option>';
-            this.config.templates.forEach(template => {
-                const option = document.createElement('option');
-                option.value = template.id;
-                option.textContent = template.name;
-                templateSelect.appendChild(option);
-            });
-        }
-
-        // Render style buttons
-        const styleContainer = document.getElementById('style-container');
-        if (styleContainer && this.config.styles) {
-            styleContainer.innerHTML = '';
-            this.config.styles.forEach(style => {
-                const btn = document.createElement('button');
-                btn.className = 'btn btn-outline-primary btn-sm me-2 mb-2 style-btn';
-                btn.textContent = style.name;
-                btn.dataset.style = style.id;
-                btn.title = style.description;
-                styleContainer.appendChild(btn);
-            });
-        }
-
-        // Render quality presets
-        const qualitySelect = document.getElementById('quality');
-        if (qualitySelect) {
-            qualitySelect.innerHTML = '';
-            const qualities = ['Low', 'Medium', 'High', 'Ultra'];
-            qualities.forEach(quality => {
-                const option = document.createElement('option');
-                option.value = quality;
-                option.textContent = quality;
-                qualitySelect.appendChild(option);
-            });
-        }
-
-        // Render aspect ratios
-        const aspectRatioSelect = document.getElementById('aspect-ratio');
-        if (aspectRatioSelect) {
-            aspectRatioSelect.innerHTML = '';
-            const ratios = ['1:1', '16:9', '4:3', '3:2', '2:3'];
-            ratios.forEach(ratio => {
-                const option = document.createElement('option');
-                option.value = ratio;
-                option.textContent = ratio;
-                aspectRatioSelect.appendChild(option);
-            });
-        }
-
-        // Render samplers
-        const samplerSelect = document.getElementById('sampler');
-        if (samplerSelect) {
-            samplerSelect.innerHTML = '';
-            const samplers = ['Euler', 'Euler a', 'DPM++ 2M', 'DPM++ 2M Karras', 'DDIM'];
-            samplers.forEach(sampler => {
-                const option = document.createElement('option');
-                option.value = sampler;
-                option.textContent = sampler;
-                samplerSelect.appendChild(option);
-            });
-        }
-    }
-
-    updateUI() {
-        // Update form values from state
-        const promptInput = document.getElementById('prompt');
-        const negativePromptInput = document.getElementById('negative-prompt');
-        const seedInput = document.getElementById('seed');
-        const cfgScaleInput = document.getElementById('cfg-scale');
-        const stepsInput = document.getElementById('steps');
-        const samplerSelect = document.getElementById('sampler');
-        const aspectRatioSelect = document.getElementById('aspect-ratio');
-        const qualitySelect = document.getElementById('quality');
-        const batchModeToggle = document.getElementById('batch-mode');
-        const batchSizeInput = document.getElementById('batch-size');
-        const templateSelect = document.getElementById('template-select');
-
-        if (promptInput) promptInput.value = this.state.prompt;
-        if (negativePromptInput) negativePromptInput.value = this.state.negativePrompt;
-        if (seedInput) seedInput.value = this.state.seed;
-        if (cfgScaleInput) cfgScaleInput.value = this.state.cfgScale;
-        if (stepsInput) stepsInput.value = this.state.steps;
-        if (samplerSelect) samplerSelect.value = this.state.sampler;
-        if (aspectRatioSelect) aspectRatioSelect.value = this.state.aspectRatio;
-        if (qualitySelect) qualitySelect.value = this.state.quality;
-        if (batchModeToggle) batchModeToggle.checked = this.state.batchMode;
-        if (batchSizeInput) batchSizeInput.value = this.state.batchSize;
-        if (templateSelect) templateSelect.value = this.state.template;
-
-        // Update labels
-        this.updateCfgScaleLabel();
-        this.updateStepsLabel();
-        this.updateBatchUI();
-        this.updateConnectionStatus(this.isConnected);
-        this.updateGenerationUI(this.isGenerating);
-    }
-
-    applyQualitySettings() {
-        switch (this.state.quality) {
-            case 'Low':
-                this.state.cfgScale = 6;
-                this.state.steps = 20;
-                this.state.sampler = 'Euler';
-                break;
-            case 'Medium':
-                this.state.cfgScale = 7;
-                this.state.steps = 25;
-                this.state.sampler = 'Euler a';
-                break;
-            case 'High':
-                this.state.cfgScale = 7.5;
-                this.state.steps = 28;
-                this.state.sampler = 'DPM++ 2M';
-                break;
-            case 'Ultra':
-                this.state.cfgScale = 8;
-                this.state.steps = 30;
-                this.state.sampler = 'DPM++ 2M Karras';
-                break;
-        }
-
-        this.updateUI();
-        this.saveState();
-    }
-
-    clearAll() {
-        this.state.prompt = '';
-        this.state.negativePrompt = '';
-        this.state.seed = '';
-        this.state.cfgScale = 7;
-        this.state.steps = 28;
-        this.state.sampler = 'Euler a';
-        this.state.aspectRatio = '1:1';
-        this.state.quality = 'High';
-        this.state.batchMode = false;
-        this.state.batchSize = 1;
-        this.state.stylePreset = 'realistic';
-        this.state.template = null;
-
-        this.updateUI();
-        this.saveState();
-    }
-
-    generateImage() {
-        if (!this.state.prompt.trim()) {
-            this.showError('Please enter a prompt');
-            return;
-        }
-
-        if (!this.isConnected) {
-            this.showError('Not connected to server');
-            return;
-        }
-
-        if (this.isGenerating) {
-            this.showError('Generation already in progress');
-            return;
-        }
-
-        const batchSize = this.state.batchMode ? Math.max(1, Math.min(this.state.batchSize, 10)) : 1;
-
-        for (let i = 0; i < batchSize; i++) {
-            const settings = {
-                prompt: this.state.prompt,
-                negative_prompt: this.state.negativePrompt,
-                seed: this.state.seed
-                    ? (parseInt(this.state.seed) + i).toString()
-                    : Math.floor(Math.random() * 4294967295).toString(),
-                cfg_scale: this.state.cfgScale,
-                steps: this.state.steps,
-                sampler: this.state.sampler,
-                aspect_ratio: this.state.aspectRatio,
-                quality: this.state.quality,
-                batch_mode: this.state.batchMode,
-                batch_size: batchSize,
-                batch_index: i
-            };
-
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.ws.send(JSON.stringify({
-                    type: 'generate',
-                    settings: settings
-                }));
-            }
-        }
-
-        if (batchSize > 1) {
-            this.showInfo(`Batch generation started: ${batchSize} images`);
-        }
-    }
-
-    stopGeneration() {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({
-                type: 'stop',
-                generationId: this.currentGenerationId
-            }));
-        }
-    }
-
-    saveCurrentConfig() {
-        const configName = prompt('Enter a name for this configuration:', `Config ${new Date().toLocaleString()}`);
-        if (configName) {
-            const config = {
-                name: configName,
-                timestamp: new Date().toISOString(),
-                state: { ...this.state }
-            };
-
-            this.state.savedConfigs.push(config);
-            this.saveState();
-            this.showInfo(`Configuration saved as "${configName}"`);
-        }
-    }
-
-    loadConfigFromStorage() {
-        if (this.state.savedConfigs.length === 0) {
-            this.showError('No saved configurations found');
-            return;
-        }
-
-        const configNames = this.state.savedConfigs.map(c => c.name).join('\n');
-        const selectedName = prompt(`Saved configurations:\n${configNames}\n\nEnter the name of the configuration to load:`, '');
-
-        if (selectedName) {
-            const config = this.state.savedConfigs.find(c => c.name === selectedName);
-            if (config) {
-                this.state = { ...this.state, ...config.state };
-                this.updateUI();
-                this.showInfo(`Configuration "${selectedName}" loaded`);
-            } else {
-                this.showError('Configuration not found');
-            }
-        }
-    }
-
-    exportConfig() {
-        const configData = {
-            timestamp: new Date().toISOString(),
-            state: this.state
-        };
-
-        const dataStr = JSON.stringify(configData, null, 2);
-        const dataBlob = new Blob([dataStr], { type: 'application/json' });
-        const url = URL.createObjectURL(dataBlob);
-
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `vpe_config_${Date.now()}.json`;
-        link.click();
-
-        URL.revokeObjectURL(url);
-        this.showInfo('Configuration exported successfully');
-    }
-
-    importConfig() {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json';
-
-        input.onchange = async (e) => {
-            const file = e.target.files[0];
-            if (file) {
-                try {
-                    const text = await file.text();
-                    const configData = JSON.parse(text);
-
-                    if (configData.state) {
-                        this.state = { ...this.state, ...configData.state };
-                        this.updateUI();
-                        this.saveState();
-                        this.showInfo('Configuration imported successfully');
-                    } else {
-                        this.showError('Invalid configuration file format');
-                    }
-                } catch (error) {
-                    this.showError('Failed to import configuration: ' + error.message);
-                }
-            }
-        };
-
-        input.click();
-    }
-
-    showHistory() {
-        const historyContainer = document.getElementById('history-container');
-        if (historyContainer) {
-            historyContainer.innerHTML = '';
-
-            if (this.state.history.length === 0) {
-                historyContainer.innerHTML = '<p class="text-muted">No generation history available.</p>';
-                return;
-            }
-
-            this.state.history.forEach(entry => {
-                const historyItem = document.createElement('div');
-                historyItem.className = 'card mb-3';
-                historyItem.innerHTML = `
-                    <div class="card-body">
-                        <h6 class="card-title">${new Date(entry.timestamp).toLocaleString()}</h6>
-                        <p class="card-text"><strong>Prompt:</strong> ${entry.prompt}</p>
-                        <button class="btn btn-sm btn-primary" onclick="window.vpeClient.loadHistoryEntry('${entry.id}')">
-                            <i class="fas fa-redo"></i> Use This
-                        </button>
-                    </div>
-                `;
-                historyContainer.appendChild(historyItem);
-            });
-        }
-    }
-
-    loadHistoryEntry(id) {
-        const entry = this.state.history.find(h => h.id === id);
-        if (entry) {
-            this.state.prompt = entry.prompt;
-            this.state.cfgScale = entry.settings.cfg_scale;
-            this.state.steps = entry.settings.steps;
-            this.state.sampler = entry.settings.sampler;
-            this.state.aspectRatio = entry.settings.aspect_ratio;
-            this.updateUI();
-            this.showInfo('History entry loaded');
-        }
-    }
-
-    setupAdditionalEventListeners() {
-        // Template buttons
-        const applyTemplateBtn = document.getElementById('apply-template');
-        applyTemplateBtn?.addEventListener('click', () => {
-            this.templateManager?.applySelectedTemplate();
-        });
-
-        // Style buttons
-        const applyStyleBtn = document.getElementById('apply-style');
-        applyStyleBtn?.addEventListener('click', () => {
-            this.styleManager?.applySelectedStyle();
-        });
-
-        // Style button clicks
-        const styleButtons = document.querySelectorAll('.style-btn');
-        styleButtons.forEach(btn => {
-            btn.addEventListener('click', () => {
-                this.styleManager?.selectStyle(btn.dataset.style);
-            });
-        });
-
-        // Template select
-        const templateSelect = document.getElementById('template-select');
-        templateSelect?.addEventListener('change', (e) => {
-            this.templateManager?.selectTemplate(e.target.value);
-        });
-
-        // History buttons
-        const historyBtn = document.getElementById('history');
-        historyBtn?.addEventListener('click', () => {
-            this.historyManager?.showHistory();
-        });
-
-        const clearHistoryBtn = document.getElementById('clear-history');
-        clearHistoryBtn?.addEventListener('click', () => {
-            this.historyManager?.clearHistory();
-        });
-
-        // Export/Import buttons
-        const exportAllBtn = document.getElementById('export-all');
-        exportAllBtn?.addEventListener('click', () => {
-            this.exportImportManager?.exportAll();
-        });
-
-        const importAllBtn = document.getElementById('import-all');
-        importAllBtn?.addEventListener('click', () => {
-            this.exportImportManager?.importAll();
-        });
-
-        // Random seed button
-        const randomSeedBtn = document.getElementById('random-seed');
-        randomSeedBtn?.addEventListener('click', () => {
-            this.generateRandomSeed();
-        });
-
-        // Clear button
-        const clearBtn = document.getElementById('clear');
-        clearBtn?.addEventListener('click', () => {
-            this.clearAll();
-        });
-
-        // Save/Load buttons
-        const saveBtn = document.getElementById('save');
-        saveBtn?.addEventListener('click', () => {
-            this.saveCurrentConfig();
-        });
-
-        const loadBtn = document.getElementById('load');
-        loadBtn?.addEventListener('click', () => {
-            this.loadConfigFromStorage();
-        });
-
-        // Export/Import buttons
-        const exportBtn = document.getElementById('export');
-        exportBtn?.addEventListener('click', () => {
-            this.exportConfig();
-        });
-
-        const importBtn = document.getElementById('import');
-        importBtn?.addEventListener('click', () => {
-            this.importConfig();
-        });
-    }
-
-    generateRandomSeed() {
-        const randomSeed = Math.floor(Math.random() * 4294967295);
-        this.state.seed = randomSeed.toString();
-        this.updateUI();
-        this.saveState();
-        this.showInfo(`Random seed generated: ${randomSeed}`);
-    }
-
-    reRender() {
-        if (!this.state.prompt.trim()) {
-            this.showError('No prompt to re-render');
-            return;
-        }
-        this.generateImage();
-    }
-
-    toggleQuality() {
-        const qualities = ['Low', 'Medium', 'High', 'Ultra'];
-        const currentIndex = qualities.indexOf(this.state.quality);
-        const nextIndex = (currentIndex + 1) % qualities.length;
-        this.state.quality = qualities[nextIndex];
-        this.applyQualitySettings();
-        this.showInfo(`Quality: ${this.state.quality}`);
-    }
-
-    toggleBatchMode() {
-        this.state.batchMode = !this.state.batchMode;
-        this.updateBatchUI();
-        this.saveState();
-        this.showInfo(`Batch mode: ${this.state.batchMode ? 'ON' : 'OFF'}`);
-    }
-
-    toggleTemplateMode() {
-        const templatePanel = document.getElementById('template-panel');
-        if (templatePanel) {
-            const isVisible = templatePanel.style.display !== 'none';
-            templatePanel.style.display = isVisible ? 'none' : 'block';
-        }
-    }
-
-    toggleStyleMode() {
-        const stylePanel = document.getElementById('style-panel');
-        if (stylePanel) {
-            const isVisible = stylePanel.style.display !== 'none';
-            stylePanel.style.display = isVisible ? 'none' : 'block';
-        }
-    }
-
-    clearReferenceImage() {
-        this.state.referenceImage = null;
-        const preview = document.getElementById('image-preview');
-        if (preview) {
-            preview.innerHTML = '';
-        }
-        this.showInfo('Reference image cleared');
-    }
+import { setPromptFormat, applyPreset, buildFlatPrompt, buildStructuredPrompt, buildMidjourneyPrompt, buildJson } from './template_manager.js';
+import { applyConflictRules } from './style_manager.js';
+import { copyPrompt, copyJson, savePrompt, enhancePrompt } from './export_import.js';
+import { resetAll } from './history_manager.js';
+import { bindEvents, initCollapsible } from './event_handlers.js';
+
+
+// =============================================
+// CONFIG
+// =============================================
+const groupConfig = {
+  aiModel: { mode: "single" },
+  cameraBody: { mode: "single" },
+  aspectRatio: { mode: "single" },
+  resolution: { mode: "single" },
+  purpose: { mode: "single" },
+  format: { mode: "single" },
+  medium: { mode: "single" },
+  lens: { mode: "single" },
+  focalLength: { mode: "single" },
+  shotSize: { mode: "single" },
+  aperture: { mode: "single" },
+  angle: { mode: "single" },
+  composition: { mode: "single" },
+  quality: { mode: "single" },
+  mjVersion: { mode: "single" },
+  mjStyle: { mode: "single" },
+  fluxModel: { mode: "single" },
+  dalleStyle: { mode: "single" },
+  dalleQuality: { mode: "single" },
+  referenceType: { mode: "single" },
+  photoStyle: { mode: "single" },
+  cinemaStyle: { mode: "single" },
+  directorStyle: { mode: "single" },
+  artStyle: { mode: "single" },
+  colorPalette: { mode: "single" },
+  mood: { mode: "single" },
+  lightType: { mode: "primaryAccent" },
+  timeOfDay: { mode: "primaryAccent" },
+  lightFX: { mode: "multi" },
+  skinDetail: { mode: "multi" },
+  hairDetail: { mode: "multi" },
+  material: { mode: "multi" },
+  typography: { mode: "multi" },
+  quickStyle: { mode: "single" },
+  fashionFoodStyle: { mode: "single" },
+  emotion: { mode: "single" }
+};
+
+const MAX_CONSISTENCY_PREFIX = `FACE ID LOCKED from reference. Exact facial match required - all features preserved.
+"CONSISTENCY PROTOCOL": "100% facial feature".
+"preservation from reference image".
+"FACE LOCKED": "NON-NEGOTIABLE"
+"FACE CONSISTENCY": "100% - All facial features must remain IDENTICAL to locked reference CHARACTER INTEGRITY: Maintain key features across all variations ZERO DEVIATION from specified eye color, hair color, face structure, unique identifiers
+"Keep the facial features of the person in the uploaded image exactly consistent. Do not modify their identity. Maintain 70% identical bone structure, skin tone, and facial imperfections (moles, scars)."
+`;
+
+
+
+const FILM_STOCKS = {
+  "Kodak Vision3 500T": "shot on Kodak Vision3 500T 5219 film stock, visible film grain, red halation around highlights, tungsten color balance, cinematic texture, deep shadows",
+  "Kodak Vision3 250D": "shot on Kodak Vision3 250D 5207 film stock, fine grain structure, true-to-life colors, rich daylight saturation, organic skin tones",
+  "Kodak Vision3 50D": "shot on Kodak Vision3 50D film stock, virtually grain-free, hyper-vivid colors, extreme detail retention, pristine film quality",
+  "Fujifilm Eterna 500T": "shot on Fujifilm Eterna 500T, low contrast, soft pastel color palette, cinematic greenish shadows, smooth tonal transitions",
+  "Kodak Tri-X 400": "shot on Kodak Tri-X 400 Black and White film, heavy contrast, gritty film grain, noir aesthetic, monochromatic",
+  "Kodachrome 64": "shot on vintage Kodachrome 64, nostalgic warm colors, deeply saturated reds and yellows, 1970s magazine look",
+  "ARRI Alexa 35 Sensor": "shot on ARRI Alexa 35, REVEAL Color Science, extreme dynamic range, creamy highlight roll-off, noise-free shadows",
+  "RED V-Raptor / Monstro": "shot on RED V-Raptor 8K VV, hyper-realistic detail, razor sharp, deep crushed blacks, digital precision",
+  "Sony Venice 2": "shot on Sony Venice 2, exceptional low light performance, clean vibrant colors, modern full-frame aesthetic",
+  "VHS / MiniDV": "shot on VHS camcorder, 1990s home video style, tracking errors, chromatic aberration, low resolution, scanlines"
+};
+
+// =============================================
+// UTILS
+// =============================================
+export const $ = id => document.getElementById(id);
+export const esc = s => (s ?? "").toString().replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[m]);
+
+export function notify(msg, type = "success") {
+  const n = $("notification");
+  n.textContent = msg;
+  n.className = "notification " + type;
+  n.classList.add("show");
+  clearTimeout(n._t);
+  n._t = setTimeout(() => n.classList.remove("show"), 2500);
 }
 
-// Initialize the application when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
-    window.vpeClient = new VPEClient();
+export function wordCount(t) { const s = (t || "").trim(); return s ? s.split(/\s+/).length : 0; }
+export function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
 
-    // Initialize additional modules
-    window.vpeClient.templateManager = new TemplateManager(window.vpeClient);
-    window.vpeClient.styleManager = new StyleManager(window.vpeClient);
-    window.vpeClient.historyManager = new HistoryManager(window.vpeClient);
-    window.vpeClient.exportImportManager = new ExportImportManager(window.vpeClient);
-    window.vpeClient.eventHandlers = new EventHandlers(window.vpeClient);
-
-    // Setup additional event listeners
-    window.vpeClient.setupAdditionalEventListeners();
-
-    // Register global action handlers for action-buttons.js
-    window.uiActionHandlers = {
-        resetAll: () => window.vpeClient.clearAll(),
-        translateScene: async () => {
-            const prompt = window.vpeClient.state.prompt;
-            if (!prompt.trim()) return window.vpeClient.showError('No prompt to translate');
-            try {
-                const res = await fetch('/api/translate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: prompt, to: 'en' })
-                });
-                const data = await res.json();
-                if (data.text) {
-                    window.vpeClient.state.prompt = data.text;
-                    window.vpeClient.updateUI();
-                    window.vpeClient.saveState();
-                    window.vpeClient.showInfo('Prompt translated to English');
-                }
-            } catch (err) {
-                window.vpeClient.showError('Translation failed: ' + err.message);
-            }
-        },
-        enhancePrompt: async () => {
-            const prompt = window.vpeClient.state.prompt;
-            if (!prompt.trim()) return window.vpeClient.showError('No prompt to enhance');
-            try {
-                const res = await fetch('/api/enhance', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text: prompt })
-                });
-                const data = await res.json();
-                if (data.text) {
-                    window.vpeClient.state.prompt = data.text;
-                    window.vpeClient.updateUI();
-                    window.vpeClient.saveState();
-                    window.vpeClient.showInfo('Prompt enhanced');
-                }
-            } catch (err) {
-                window.vpeClient.showError('Enhancement failed: ' + err.message);
-            }
-        },
-        setPromptFormat: (format) => {
-            window.vpeClient.state.promptFormat = format;
-            window.vpeClient.saveState();
-            // Highlight active format button
-            document.querySelectorAll('[data-format]').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.format === format);
-            });
-            window.vpeClient.showInfo(`Prompt format: ${format}`);
-        }
-    };
+// =============================================
+// INIT
+// =============================================
+document.addEventListener("DOMContentLoaded", function () {
+  // Local fallback for css2 when opened directly from disk.
+  var css2 = document.getElementById("css2LocalLink");
+  if (css2 && window.location.protocol === "file:") {
+    css2.href = "file:///C:/Users/TOT/Documents/Grav4/VideoPrompt/css2";
+  }
+  initPresets();
+  bindEvents();
+  setPromptFormat(state.promptFormat);
+  updateAll();
 });
+
+function initPresets() {
+  const g = $("presetGrid");
+  g.innerHTML = "";
+  presets.forEach((p, i) => {
+    const b = document.createElement("button");
+    b.className = "option-btn";
+    b.style.borderColor = "var(--green)";
+    b.style.borderWidth = "2px";
+    b.dataset.presetIndex = String(i);
+    b.textContent = p.name;
+    b.addEventListener("click", () => applyPreset(i));
+    g.appendChild(b);
+  });
+}
+
+
+
+export function handleInput() { updateAll(); }
+
+// =============================================
+// TRANSLATE SCENE — via backend /api/translate
+// =============================================
+async function translateScene() {
+  var textarea = $("mainSubject");
+  var text = textarea.value.trim();
+  var status = $("translateStatus");
+  var btn = $("translateBtn");
+
+  if (!text) { notify("Поле пустое", "warn"); return; }
+
+  // Detect if already English
+  var nonAscii = text.replace(/[a-zA-Z0-9\s.,!?;:\'"()\-\/\\@#$%^&*=+\[\]{}|<>~`]/g, "");
+  if (nonAscii.length < text.length * 0.15) {
+    notify("Текст уже на английском", "warn");
+    return;
+  }
+
+  btn.disabled = true;
+  status.textContent = "Переводим...";
+  status.style.color = "var(--accent-light)";
+
+  try {
+    var response = await fetch("/api/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text, to: "en" })
+    });
+    var data = await response.json();
+    if (!response.ok) {
+      throw new Error(data && data.error ? data.error : "HTTP " + response.status);
+    }
+
+    var translated = data && data.text ? String(data.text) : "";
+    if (!translated) throw new Error("Пустой ответ перевода");
+
+    if (translated === translated.toUpperCase() && translated.length > 20) {
+      translated = translated.charAt(0).toUpperCase() + translated.slice(1).toLowerCase();
+    }
+    textarea.value = translated;
+    state.mainSubject = translated;
+    status.textContent = "✅ Переведено";
+    status.style.color = "var(--green)";
+    updateAll();
+    notify("Текст переведён на английский");
+  } catch (e) {
+    status.textContent = "❌ Ошибка";
+    status.style.color = "var(--red, #ff7675)";
+    notify("Ошибка перевода: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+    setTimeout(function () { status.textContent = ""; }, 4000);
+  }
+}
+
+// =============================================
+// SELECTION LOGIC
+// =============================================
+export function handleSelect(group, value) {
+  const mode = (groupConfig[group] && groupConfig[group].mode) || "single";
+
+  // FIX: Any manual selection clears preset-active flag
+  if (state.isStandardPresetActive && group !== "resolution") {
+    state.isStandardPresetActive = false;
+  }
+
+  if (mode === "single") {
+    // Toggle off if clicking same value
+    if (state[group] === value) state[group] = "";
+    else state[group] = value;
+
+    document.querySelectorAll(`[data-group="${group}"]`).forEach(b => {
+      b.classList.toggle("active", b.dataset.value === state[group]);
+      b.querySelectorAll(".slot-tag").forEach(t => t.remove());
+    });
+
+    if (group === "aspectRatio") {
+      state.resolution = "";
+      rebuildResolution();
+    }
+    if (group === "aiModel") {
+      updateModelHint();
+    }
+    // FIX: Quick Style visual reset
+    if (group === "quickStyle" && state[group]) {
+      // Clear competing styles visually and in state
+      state.photoStyle = ""; state.cinemaStyle = ""; state.directorStyle = "";
+      state.fashionFoodStyle = ""; // Clear Fashion Food
+      syncGroup("photoStyle"); syncGroup("cinemaStyle"); syncGroup("directorStyle");
+      syncGroup("fashionFoodStyle");
+      // Also ensure expanded sections correct for Quick Style
+      if (window.expandSectionsForQuickStyle) window.expandSectionsForQuickStyle(true);
+    }
+
+    // FIX: Fashion Food Style visual reset
+    if (group === "fashionFoodStyle" && state[group]) {
+      state.quickStyle = "";
+      syncGroup("quickStyle");
+      // Clear other styles that are blanket disabled
+      ["photoStyle", "cinemaStyle", "directorStyle", "artStyle", "filmStock", "referenceType"].forEach(k => {
+        state[k] = "";
+        syncGroup(k);
+      });
+    }
+  }
+
+  if (mode === "multi") {
+    if (!Array.isArray(state[group])) state[group] = [];
+    const arr = state[group];
+    const idx = arr.indexOf(value);
+    if (idx >= 0) arr.splice(idx, 1); else arr.push(value);
+
+    document.querySelectorAll(`[data-group="${group}"]`).forEach(b => {
+      b.classList.toggle("active", arr.includes(b.dataset.value));
+    });
+  }
+
+  if (mode === "primaryAccent") {
+    togglePA(group, value);
+  }
+
+  updateAll();
+}
+
+function togglePA(group, value) {
+  const cur = state[group] || { primary: "", accent: "" };
+
+  if (cur.primary === value) { cur.primary = ""; }
+  else if (cur.accent === value) { cur.accent = ""; }
+  else if (!cur.primary) { cur.primary = value; }
+  else if (!cur.accent) { cur.accent = value; }
+  else { cur.accent = value; }
+
+  state[group] = cur;
+  syncPAUI(group);
+}
+
+function syncPAUI(group) {
+  const cur = state[group] || { primary: "", accent: "" };
+  document.querySelectorAll(`[data-group="${group}"]`).forEach(b => {
+    const v = b.dataset.value;
+    b.classList.toggle("active", v === cur.primary || v === cur.accent);
+    b.querySelectorAll(".slot-tag").forEach(t => t.remove());
+
+    if (v === cur.primary) {
+      const t = document.createElement("span");
+      t.className = "slot-tag primary"; t.textContent = "P";
+      b.appendChild(t);
+    }
+    if (v === cur.accent) {
+      const t = document.createElement("span");
+      t.className = "slot-tag accent"; t.textContent = "A";
+      b.appendChild(t);
+    }
+  });
+}
+
+export function syncGroup(group) {
+  const mode = groupConfig[group] && groupConfig[group].mode;
+  if (mode === "single") {
+    document.querySelectorAll(`[data-group="${group}"]`).forEach(b => {
+      b.classList.toggle("active", b.dataset.value === state[group]);
+      b.querySelectorAll(".slot-tag").forEach(t => t.remove());
+    });
+  }
+  if (mode === "multi") {
+    const arr = state[group] || [];
+    document.querySelectorAll(`[data-group="${group}"]`).forEach(b => {
+      b.classList.toggle("active", arr.includes(b.dataset.value));
+    });
+  }
+  if (mode === "primaryAccent") syncPAUI(group);
+}
+
+// =============================================
+// RESOLUTION
+// =============================================
+export function rebuildResolution() {
+  const ar = state.aspectRatio;
+  const info = $("resolutionInfo");
+  const opts = $("resolutionOptions");
+  opts.innerHTML = "";
+
+  if (!ar || !resolutionMap[ar]) {
+    info.style.display = "block";
+    opts.style.display = "none";
+    return;
+  }
+  info.style.display = "none";
+  opts.style.display = "grid";
+
+  resolutionMap[ar].forEach(r => {
+    const b = document.createElement("button");
+    b.className = "option-btn";
+    b.dataset.group = "resolution";
+    b.dataset.value = r.value;
+    b.textContent = r.label;
+    if (state.resolution === r.value) b.classList.add("active");
+    opts.appendChild(b);
+  });
+}
+
+// =============================================
+// MODEL HINTS
+// =============================================
+export function updateModelHint() {
+  const h = $("modelHint");
+  if (state.aiModel && modelTips[state.aiModel]) {
+    h.textContent = modelTips[state.aiModel];
+    h.style.display = "block";
+  } else {
+    h.style.display = "none";
+  }
+}
+
+function updateRefUI() {
+  const isMJ = state.aiModel === "midjourney";
+  const sec = $("referencesSection");
+  const input = $("referenceImages");
+
+  // Midjourney mode: disable reference upload entirely
+  if (isMJ) {
+    if (sec) sec.classList.add("disabled-section");
+    if (input) {
+      input.value = "";
+      input.disabled = true;
+    }
+    state.referenceImages = [];
+    $("imagePreviewContainer").style.display = "none";
+    $("referenceOptions").style.display = "none";
+    $("referenceWeight").style.display = "none";
+    $("refUploadHint").innerHTML = "Загрузка референсных изображений отключена для <b>Midjourney</b> в этой версии билдера.";
+    return;
+  }
+
+  // Non-MJ engines: enable references
+  if (sec) sec.classList.remove("disabled-section");
+  if (input) input.disabled = false;
+
+  $("refUploadHint").textContent = "До 13 изображений. Опишите, что взять из каждого.";
+  $("referenceImages").setAttribute("multiple", "");
+
+  const hasRefs = state.referenceImages.length > 0;
+  if (!hasRefs) {
+    $("imagePreviewContainer").style.display = "none";
+    $("referenceOptions").style.display = "none";
+    $("referenceWeight").style.display = "none";
+    return;
+  }
+
+  $("imagePreviewContainer").style.display = "block";
+  $("referenceOptions").style.display = "block";
+  // Weight slider: useful for SD and Flux (IP-Adapter). Not useful for chatgpt/nano/dall-e/ideogram/etc.
+  const needsWeight = ["stable-diffusion", "flux"].includes(state.aiModel);
+  $("referenceWeight").style.display = needsWeight ? "block" : "none";
+}
+
+function updateGenParamsUI() {
+  const m = state.aiModel;
+  $("mjGenParams").style.display = m === "midjourney" ? "block" : "none";
+  $("sdGenParams").style.display = m === "stable-diffusion" ? "block" : "none";
+  $("fluxGenParams").style.display = m === "flux" ? "block" : "none";
+  $("dalleGenParams").style.display = m === "dall-e-3" ? "block" : "none";
+  $("noGenParams").style.display = ["midjourney", "stable-diffusion", "flux", "dall-e-3", ""].includes(m) ? "none" : "block";
+}
+
+// =============================================
+// COMPACT PROMPT — strip to essential core
+// =============================================
+export function compactPrompt() {
+  const outBox = $("promptOutput");
+  let text = outBox.textContent || "";
+  if (!text.trim() || text.includes("Select parameters") || text.includes("Выберите")) {
+    notify("Промпт пуст", "warn"); return;
+  }
+
+  // Remove quality spam keywords
+  const qualitySpam = [
+    "8k", "4k", "2k", "masterpiece", "best quality", "ultra detailed",
+    "high quality", "detailed", "highly detailed", "professional",
+    "award-winning", "amazing", "beautiful", "stunning"
+  ];
+  let parts = text.split(", ");
+  parts = parts.filter(p => {
+    const low = p.trim().toLowerCase();
+    return !qualitySpam.some(q => low === q || low === q + ",");
+  });
+
+  // Remove duplicate semantic concepts
+  const seen = new Set();
+  parts = parts.filter(p => {
+    const key = p.trim().toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 20);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // Strip appended reference/negative sections
+  let cleaned = parts.join(", ");
+  cleaned = cleaned.replace(/\n\n--- Reference images ---[\s\S]*$/, "");
+  cleaned = cleaned.replace(/\nNegative prompt:[\s\S]*$/, "");
+  cleaned = cleaned.replace(/,\s*,/g, ",").replace(/,\s*$/, "").trim();
+
+  outBox.textContent = cleaned;
+  $("charCount").textContent = String(cleaned.length);
+  $("wordCount").textContent = String(cleaned.split(/\s+/).filter(Boolean).length);
+  notify("⚡ Промпт оптимизирован — убраны избыточные слова");
+}
+
+// =============================================
+// REFERENCES
+// =============================================
+export function handleImageUpload(event) {
+  const MAX_REFERENCE_IMAGES = 13;
+  const allFiles = Array.from(event.target.files || []);
+  const files = allFiles.slice(0, MAX_REFERENCE_IMAGES);
+  if (!files.length) return;
+  if (allFiles.length > MAX_REFERENCE_IMAGES) {
+    notify(`Можно загрузить максимум ${MAX_REFERENCE_IMAGES} изображений. Лишние файлы проигнорированы.`, "warn");
+  }
+
+  // Disabled for Midjourney in this build
+  if (state.aiModel === "midjourney") {
+    event.target.value = "";
+    notify("Референсные изображения отключены для Midjourney", "warn");
+    return;
+  }
+
+  state.referenceImages = [];
+  const previews = $("imagePreviews");
+  previews.innerHTML = "";
+
+  files.forEach((file, index) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const imgData = { name: file.name, data: e.target.result, size: (file.size / 1024).toFixed(1) + " KB", description: "", width: 0, height: 0 };
+
+      // Capture actual image dimensions
+      const tempImg = new Image();
+      tempImg.onload = () => {
+        imgData.width = tempImg.naturalWidth;
+        imgData.height = tempImg.naturalHeight;
+      };
+      tempImg.onerror = () => {
+        console.warn(`Failed to load image dimensions for ${file.name}`);
+      };
+      tempImg.src = e.target.result;
+
+      state.referenceImages.push(imgData);
+
+      const card = document.createElement("div");
+      card.className = "image-preview-card";
+      imgData.extract = [];
+      card.innerHTML = `
+            <button class="image-remove-btn" data-remove-index="${index}">×</button>
+            <div><img src="${e.target.result}" alt="${esc(file.name)}"></div>
+            <div class="image-preview-details">
+              <div class="image-preview-info">
+                <div style="font-weight:800;color:var(--accent-light);margin-bottom:3px;">Изображение ${index + 1}</div>
+                <div>${esc(file.name)} · ${esc(imgData.size)}</div>
+              </div>
+              <div class="ref-extract-row">
+                ${REF_EXTRACT_OPTIONS.map((opt, oi) => `<label class="ref-extract-label"><input type="checkbox" data-ext-img="${index}" data-ext-opt="${oi}"> ${opt}</label>`).join("")}
+              </div>
+              <textarea class="image-description-input" data-desc-index="${index}" placeholder="Доп. описание: что именно взять..."></textarea>
+            </div>`;
+      // Wire extract checkboxes
+      card.querySelectorAll('[data-ext-img]').forEach(cb => {
+        cb.addEventListener('change', function () {
+          const ii = parseInt(this.dataset.extImg, 10), oo = parseInt(this.dataset.extOpt, 10), opt = REF_EXTRACT_OPTIONS[oo];
+          if (!state.referenceImages[ii]) return;
+          if (!state.referenceImages[ii].extract) state.referenceImages[ii].extract = [];
+          const ex = state.referenceImages[ii].extract;
+          this.closest(".ref-extract-label").classList.toggle("ext-checked", this.checked);
+          if (this.checked) { if (!ex.includes(opt)) ex.push(opt) } else { const i = ex.indexOf(opt); if (i >= 0) ex.splice(i, 1) }
+          updateAll();
+        });
+      });
+      previews.appendChild(card);
+
+      card.querySelector(`[data-remove-index="${index}"]`).addEventListener("click", () => removeImage(index));
+      card.querySelector(`[data-desc-index="${index}"]`).addEventListener("input", (ev) => {
+        const i = parseInt(ev.target.dataset.descIndex, 10);
+        if (state.referenceImages[i]) state.referenceImages[i].description = ev.target.value;
+        updateAll();
+      });
+
+      $("imagePreviewContainer").style.display = "block";
+      // Show reference controls for supported engines
+      $("referenceOptions").style.display = "block";
+      $("referenceWeight").style.display = ["stable-diffusion", "flux"].includes(state.aiModel) ? "block" : "none";
+      updateAll();
+    };
+    reader.onerror = () => {
+      notify(`Ошибка чтения файла ${file.name}`, "err");
+    };
+    reader.readAsDataURL(file);
+  });
+  notify(`Загружено ${files.length} файл(ов)`);
+}
+
+export function removeImage(index) {
+  state.referenceImages.splice(index, 1);
+  if (!state.referenceImages.length) {
+    $("imagePreviewContainer").style.display = "none";
+    $("referenceOptions").style.display = "none";
+    $("referenceWeight").style.display = "none";
+    $("referenceImages").value = "";
+    updateAll();
+    return;
+  }
+  rebuildImageCards();
+  updateAll();
+}
+
+export function rebuildImageCards() {
+  const previews = $("imagePreviews");
+  previews.innerHTML = "";
+  state.referenceImages.forEach((img, idx) => {
+    const card = document.createElement("div");
+    card.className = "image-preview-card";
+    const extractChecks = REF_EXTRACT_OPTIONS.map((opt, oi) => {
+      const checked = (img.extract || []).includes(opt) ? "checked" : "";
+      return `<label class="ref-extract-label"><input type="checkbox" data-ext-img="${idx}" data-ext-opt="${oi}" ${checked}> ${opt}</label>`;
+    }).join("");
+    card.innerHTML = `
+          <button class="image-remove-btn" data-remove-index="${idx}">×</button>
+          <div><img src="${img.data}" alt="${esc(img.name)}"></div>
+          <div class="image-preview-details">
+            <div class="image-preview-info">
+              <div style="font-weight:800;color:var(--accent-light);margin-bottom:3px;">Изображение ${idx + 1}</div>
+              <div>${esc(img.name)} · ${esc(img.size)}</div>
+            </div>
+            <div class="ref-extract-row">${extractChecks}</div>
+            <textarea class="image-description-input" data-desc-index="${idx}" placeholder="Что взять: палитру, позу, стиль, текстуру...">${esc(img.description || "")}</textarea>
+          </div>`;
+    previews.appendChild(card);
+    // Wire extract checkboxes
+    card.querySelectorAll('[data-ext-img]').forEach(cb => {
+      cb.addEventListener('change', function () {
+        const ii = parseInt(this.dataset.extImg, 10), oo = parseInt(this.dataset.extOpt, 10), opt = REF_EXTRACT_OPTIONS[oo];
+        if (!state.referenceImages[ii]) return;
+        if (!state.referenceImages[ii].extract) state.referenceImages[ii].extract = [];
+        const ex = state.referenceImages[ii].extract;
+        if (this.checked) { if (!ex.includes(opt)) ex.push(opt) } else { const i = ex.indexOf(opt); if (i >= 0) ex.splice(i, 1) }
+        updateAll();
+      });
+    });
+    card.querySelector(`[data-remove-index="${idx}"]`).addEventListener("click", () => removeImage(idx));
+    card.querySelector(`[data-desc-index="${idx}"]`).addEventListener("input", (ev) => {
+      const i = parseInt(ev.target.dataset.descIndex, 10);
+      if (state.referenceImages[i]) state.referenceImages[i].description = ev.target.value;
+      updateAll();
+    });
+  });
+}
+
+// =============================================
+// NEGATIVES
+// =============================================
+export function addNegative(text) {
+  const f = $("negativePrompt");
+  const cur = (f.value || "").trim();
+  // Avoid duplicates
+  const existing = cur.split(",").map(s => s.trim().toLowerCase());
+  const newParts = text.split(",").map(s => s.trim()).filter(s => !existing.includes(s.toLowerCase()));
+  if (!newParts.length) { notify("Уже добавлено", "warn"); return; }
+  f.value = cur ? (cur + ", " + newParts.join(", ")) : newParts.join(", ");
+  state.negativePrompt = f.value;
+  updateAll();
+}
+
+// =============================================
+// PROMPT FORMAT
+// =============================================
+
+
+
+// ChatGPT Image: style descriptions without author names (content policy)
+var CHATGPT_STYLE_MAP = {
+  "in the style of Annie Leibovitz, dramatic portrait lighting, rich colors": "dramatic editorial portrait, rich warm saturated colors, deep shadows with golden highlights, intimate cinematic composition",
+  "in the style of Peter Lindbergh, black and white, raw beauty, minimal retouching": "raw black-and-white portrait, unretouched natural beauty, high contrast silver gelatin aesthetic, emotional authenticity",
+  "in the style of Steve McCurry, vivid saturated colors, documentary": "vivid hypersaturated documentary photograph, intense eye contact, Kodachrome warmth, National Geographic composition",
+  "in the style of Helmut Newton, high contrast, provocative glamour, black and white": "high contrast glamour noir, provocative fashion pose, hard directional light, bold black-and-white with deep blacks",
+  "in the style of Mario Testino, warm golden tones, glossy fashion": "warm golden fashion tones, sun-kisses glossy skin, aspirational luxury aesthetic, bright editorial warmth",
+  "in the style of Tim Walker, surreal, fantastical, pastel dreamlike": "surreal fantastical set design, pastel dreamlike palette, whimsical oversized props, fairy-tale fashion fantasy",
+  "in the style of Ansel Adams, high dynamic range landscape, deep blacks, zone system": "extreme tonal range landscape, pure black to bright white, zone-system exposure, majestic wilderness clarity",
+  "in the style of Richard Avedon, stark white background, high contrast portrait": "stark pure white background, high contrast minimalist portrait, sharp focus on facial character, fashion-documentary hybrid",
+  "in the style of Guy Bourdin, bold saturated colors, surreal fashion, strong shadows": "bold saturated pop colors, surreal fashion narrative, hard geometric shadows, provocative avant-garde composition",
+  "in the style of Gregory Crewdson, cinematic suburban, eerie twilight, elaborate staged": "cinematic suburban tableau, eerie twilight atmosphere, elaborate staged scene, uncanny everyday mystery",
+  "cinematography by Roger Deakins, naturalistic light, precise framing, atmospheric": "naturalistic motivated lighting, precise geometric framing, atmospheric haze, restrained palette with emotional depth",
+  "cinematography by Emmanuel Lubezki, long takes, natural light, immersive": "pure natural light, immersive wide-angle perspective, ethereal luminosity, spiritual fluid movement feel",
+  "cinematography by Hoyte van Hoytema, IMAX, desaturated palette, epic scale": "IMAX large-format clarity, desaturated cool palette, epic monumental scale, tactile film grain texture",
+  "cinematography by Robert Richardson, high contrast, bold color, dynamic lighting": "aggressive high-contrast lighting, bold expressive color, dramatic rim lights, kinetic visual energy",
+  "cinematography by Bradford Young, low-key lighting, rich shadows, warm undertones": "low-key intimate lighting, rich layered shadows, warm amber undertones, textured underexposed beauty",
+  "cinematography by Janusz Kaminski, overexposed highlights, bleach bypass": "overexposed blown highlights, bleach bypass silver tones, diffused backlight halos, raw documentary feel",
+  "cinematography by Vittorio Storaro, painterly light, rich color symbolism": "painterly Renaissance lighting, rich symbolic color storytelling, warm-to-cool emotional transitions, operatic grandeur",
+  "cinematography by Greig Fraser, anamorphic, moody atmosphere, teal and orange": "anamorphic lens distortion, moody atmospheric haze, teal-and-orange grade, modern epic texture",
+  "cinematography by Linus Sandgren, warm nostalgic tones, golden light, film grain": "warm nostalgic golden tones, classic Hollywood glamour, visible film grain, romantic soft focus",
+  "cinematography by Ari Wegner, textured natural light, intimate framing, muted palette": "textured available-light naturalism, intimate observational framing, muted period-authentic palette",
+  "directed by Denis Villeneuve, vast scale, muted desaturated palette, atmospheric silence, epic compositions": "vast monumental scale, muted desaturated palette, atmospheric silence and negative space, geometric epic compositions",
+  "directed by Wes Anderson, symmetrical framing, pastel color palette, whimsical miniature aesthetic": "obsessively symmetrical framing, curated pastel palette, whimsical dollhouse aesthetic, centered compositions",
+  "directed by Christopher Nolan, IMAX large format, desaturated blue tones, practical effects, epic scope": "IMAX large-format grandeur, desaturated cool blue tones, grounded practical realism, epic cerebral scope",
+  "directed by David Fincher, dark muted palette, precise framing, cold blue-green tones, clinical aesthetic": "dark muted palette, mathematically precise framing, cold blue-green undertones, clinical sterile aesthetic",
+  "directed by Ridley Scott, atmospheric haze, painterly compositions, epic historical grandeur": "atmospheric haze and smoke, painterly Renaissance compositions, epic historical grandeur, chiaroscuro depth",
+  "directed by Quentin Tarantino, bold saturated colors, dynamic angles, retro grindhouse aesthetic": "bold oversaturated retro colors, dynamic low-angle shots, vintage grindhouse grain, pop-culture pastiche",
+  "directed by Greta Gerwig, warm natural light, soft pastels, intimate handheld framing, nostalgic warmth": "warm natural window light, soft nostalgic pastels, intimate handheld framing, gentle feminine warmth",
+  "directed by Jordan Peele, unsettling suburban beauty, vivid colors, horror tension, surreal undertones": "unsettling suburban uncanny beauty, vivid hyper-real colors, creeping horror tension, surreal social undertones",
+  "directed by Bong Joon-ho, social contrast, sharp compositions, dark humor, class division visual metaphor": "sharp architectural compositions, visual class-division metaphors, dark satirical tone, spatial contrast storytelling",
+  "directed by Chloe Zhao, golden hour landscapes, natural light, documentary intimacy, vast American West": "golden hour vast landscape, purely natural light, documentary intimate realism, poetic frontier beauty"
+};
+// =============================================
+// BUILD PROMPT — FLAT (universal, recommended)
+// =============================================
+
+
+
+
+
+
+
+/* ===== SCRIPT TAG SPLIT ===== */
+
+
+// === COLLAPSIBLE LOGIC v3 (Strict + Quick Style Support) ===
+(function () {
+  const SECTION_MAP = {
+    "aiModel": "aiModelSection",
+    "cameraBody": "cameraSectionV2",
+    "lens": "lensSectionV2",
+    "focalLength": "apertureSection",
+    "shotSize": "apertureSection",
+    "medium": "artStyleSectionV2",
+    "aperture": "apertureSection",
+    "angle": "apertureSection",
+    "composition": "compositionSectionV2",
+    "filmStock": "filmStockSection",
+    "lighting": "lightingSectionV2",
+    "timeOfDay": "lightingSectionV2",
+    "lightFX": "lightingSectionV2",
+    "colorPalette": "paletteSectionV2",
+    "mood": "moodSectionV2",
+    "skinDetail": "skinDetailSection",
+    "hairDetail": "hairDetailSection",
+    "material": "materialSection",
+    "typography": "typographySection",
+    "photoStyle": "photoStyleSection",
+    "cinemaStyle": "cinemaStyleSection",
+    "directorStyle": "directorStyleSection",
+    "format": "formatSection",
+    "purpose": "purposeSection",
+    "referenceImages": "referencesSection",
+    "negativePrompt": "negativeSection",
+    "emotion": "emotionSection",
+    "ambience": "audioSectionV2",
+    "foley": "audioSectionV2",
+    "cinematicFx": "audioSectionV2",
+    "artStyle": "artStyleSectionV2"
+  };
+
+  function toggleSection(header, forceState = null) {
+    const section = header.parentElement;
+    if (!section) return;
+
+    if (forceState !== null) {
+      if (forceState === true) section.classList.remove('collapsed'); // Open
+      else section.classList.add('collapsed'); // Close
+    } else {
+      section.classList.toggle('collapsed');
+    }
+  }
+
+  function initCollapsible() {
+    const sections = document.querySelectorAll('.section');
+
+    // STRICT INITIAL STATE: 
+    // Open: Quick Presets, Presets. 
+    // Closed: Everything else.
+
+    sections.forEach(sec => {
+      const header = sec.querySelector('.section-header');
+      if (!header) return;
+
+      // Bind click robustly even if HTML already contains data-bound="true".
+      // Some saved HTML snapshots persist this attribute and otherwise block binding.
+      if (header.__vpeCollapseHandler) {
+        header.removeEventListener('click', header.__vpeCollapseHandler);
+      }
+      header.__vpeCollapseHandler = (e) => {
+        if (e.target.closest('.help-tip') || e.target.closest('.mode-badge') || e.target.closest('input') || e.target.closest('button')) return;
+        toggleSection(header);
+      };
+      header.addEventListener('click', header.__vpeCollapseHandler);
+      header.dataset.bound = "true";
+
+      // Initial State
+      // FIX: Removed jsonSection from default open list
+      if (sec.id === 'quickStyleSection' || sec.id === 'presetsSection' || sec.id === 'generationModeSection' || sec.id === 'promptSection') {
+        sec.classList.remove('collapsed');
+      } else {
+        sec.classList.add('collapsed');
+      }
+    });
+    console.log('VPE: Strict collapsible state applied.');
+  }
+
+  // Expose: Expand related sections for PRESETS
+  window.expandRelatedSections = function (presetValues) {
+    // 1. Collapse all param sections (keep nav sections open)
+    document.querySelectorAll('.section').forEach(sec => {
+      if (sec.id === 'quickStyleSection' || sec.id === 'presetsSection' || sec.id === 'generationModeSection') return;
+      sec.classList.add('collapsed');
+    });
+
+    // 2. Open Related
+    const keys = Object.keys(presetValues);
+
+    // Always open Core
+    document.getElementById('aiModelSection')?.classList.remove('collapsed');
+    document.getElementById('descriptionSection')?.classList.remove('collapsed');
+
+    keys.forEach(k => {
+      if (SECTION_MAP[k]) {
+        const el = document.getElementById(SECTION_MAP[k]);
+        if (el && presetValues[k]) el.classList.remove('collapsed');
+      }
+      // LightType special
+      if (k === 'lightType' && (presetValues[k].primary || presetValues[k].accent)) {
+        document.getElementById('lightingSection')?.classList.remove('collapsed');
+      }
+    });
+  };
+
+  // Expose: Expand for QUICK STYLE
+  window.expandSectionsForQuickStyle = function (isActive) {
+    if (!isActive) return; // If unselected, do nothing or user preference? Let's leave as is.
+
+    // When Quick Style is Active:
+    // Open: Quick Style, AI Model, Aspect Ratio, Resolution, Generation Mode.
+    // Close: All artistic controls (Camera, Lighting, Styles, etc) as they are disabled/locked.
+
+    const keepOpen = [
+      'quickStyleSection',
+      'aiModelSection',
+      'aspectRatioSection',
+      'descriptionSection',
+      'generationModeSection',
+      'promptSection',
+      'jsonSection'
+    ];
+
+    document.querySelectorAll('.section').forEach(sec => {
+      if (keepOpen.includes(sec.id)) {
+        sec.classList.remove('collapsed');
+      } else {
+        sec.classList.add('collapsed');
+      }
+    });
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initCollapsible);
+  } else {
+    initCollapsible();
+  }
+  window.resetAll = resetAll; // Expose for verification
+  window.buildStructuredPrompt = buildStructuredPrompt; // Expose for verification
+
+})();
+
+
+/* ===== SCRIPT TAG SPLIT ===== */
+
+
+(() => {
+  if (window.__docSyncV1) return;
+  window.__docSyncV1 = true;
+
+/* ===== SCRIPT TAG SPLIT ===== */
+
+
+
+// Export to window for prompt_engine.js
+window.buildFlatPrompt = typeof buildFlatPrompt !== "undefined" ? buildFlatPrompt : null;
+window.buildStructuredPrompt = typeof buildStructuredPrompt !== "undefined" ? buildStructuredPrompt : null;
+window.buildMidjourneyPrompt = typeof buildMidjourneyPrompt !== "undefined" ? buildMidjourneyPrompt : null;
+window.buildJson = typeof buildJson !== "undefined" ? buildJson : null;
+window.buildG4FlatForNBP = typeof buildG4FlatForNBP !== "undefined" ? buildG4FlatForNBP : null;
+window.buildG4ForNBP = typeof buildG4ForNBP !== "undefined" ? buildG4ForNBP : null;
+
+
+// Expose for external inline or other scripts
+window.state = state;
+window.$ = $;
+window.updateAll = updateAll;
+window.buildFlatPrompt = buildFlatPrompt;
+window.buildStructuredPrompt = buildStructuredPrompt;
+window.buildMidjourneyPrompt = buildMidjourneyPrompt;
+window.buildJson = buildJson;

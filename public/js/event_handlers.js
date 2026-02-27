@@ -1,510 +1,255 @@
-// Event Handlers Module for VPE Thin UI
-// Handles all user interactions and UI events
+import { state, $, updateAll, notify } from './client_logic.js';
+import { applyPreset, buildFlatPrompt } from './template_manager.js';
+import { copyPrompt, copyJson, savePrompt, enhancePrompt } from './export_import.js';
+import { resetAll } from './history_manager.js';
 
-class EventHandlers {
-    constructor(client) {
-        this.client = client;
-        this.init();
+export function bindEvents() {
+  // Delegated clicks on option buttons
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".option-btn");
+    if (!btn) return;
+
+    if (btn.dataset.action === "addNegative") {
+      addNegative(btn.dataset.value || "");
+      return;
     }
 
-    init() {
-        this.setupGlobalEventListeners();
-        this.setupKeyboardShortcuts();
-        this.setupDragAndDrop();
-        this.setupResponsiveHandlers();
-    }
+    const group = btn.dataset.group;
+    if (!group) return;
+    handleSelect(group, btn.dataset.value || "");
+  });
 
-    setupGlobalEventListeners() {
-        // Window resize handler
-        window.addEventListener('resize', () => {
-            this.handleWindowResize();
-        });
+  $("referenceImages").addEventListener("change", handleImageUpload);
+  $("refWeightSlider").addEventListener("input", (e) => {
+    state.referenceWeight = parseInt(e.target.value, 10);
+    $("weightValue").textContent = String(state.referenceWeight);
+    updateAll();
+  });
 
-        // Before unload handler
-        window.addEventListener('beforeunload', (e) => {
-            this.handleBeforeUnload(e);
-        });
+  // Gen params sliders
+  $("mjStylizeSlider").addEventListener("input", (e) => { state.mjStylize = +e.target.value; $("mjStylizeVal").textContent = state.mjStylize; updateAll(); });
+  $("mjChaosSlider").addEventListener("input", (e) => { state.mjChaos = +e.target.value; $("mjChaosVal").textContent = state.mjChaos; updateAll(); });
+  $("mjWeirdSlider").addEventListener("input", (e) => { state.mjWeird = +e.target.value; $("mjWeirdVal").textContent = state.mjWeird; updateAll(); });
+  $("sdCfgSlider").addEventListener("input", (e) => { state.sdCfg = +e.target.value; $("sdCfgVal").textContent = state.sdCfg; updateAll(); });
+  $("sdStepsSlider").addEventListener("input", (e) => { state.sdSteps = +e.target.value; $("sdStepsVal").textContent = state.sdSteps; updateAll(); });
+  $("fluxGuidanceSlider").addEventListener("input", (e) => { state.fluxGuidance = +e.target.value; $("fluxGuidanceVal").textContent = state.fluxGuidance; updateAll(); });
+  $("fluxStepsSlider").addEventListener("input", (e) => { state.fluxSteps = +e.target.value; $("fluxStepsVal").textContent = state.fluxSteps; updateAll(); });
 
-        // Online/offline handlers
-        window.addEventListener('online', () => {
-            this.handleOnlineStatusChange(true);
-        });
+  // Compact button
+  $("compactBtn").addEventListener("click", compactPrompt);
 
-        window.addEventListener('offline', () => {
-            this.handleOnlineStatusChange(false);
-        });
+  $("copyPromptBtn").addEventListener("click", copyPrompt);
+  $("copyJsonBtn").addEventListener("click", copyJson);
+  $("resetBtn").addEventListener("click", resetAll);
+  $("saveBtn").addEventListener("click", savePrompt);
 
-        // Focus/blur handlers
-        window.addEventListener('focus', () => {
-            this.handleWindowFocus();
-        });
+  // Special modes checkboxes — bind via JS, not inline
+  ["generateFourMode", "grid3x3Mode", "maxConsistency", "beforeAfter", "seamlessPattern", "skinRenderBoost", "hairRenderBoost"].forEach(id => {
+    const cb = $(id);
+    if (cb) {
+      cb.addEventListener("change", () => {
+        state[id] = cb.checked;
 
-        window.addEventListener('blur', () => {
-            this.handleWindowBlur();
-        });
-    }
-
-    setupKeyboardShortcuts() {
-        document.addEventListener('keydown', (e) => {
-            // Prevent shortcuts when typing in inputs
-            if (this.isTypingInInput(e.target)) return;
-
-            // Global shortcuts
-            if (e.ctrlKey || e.metaKey) {
-                switch (e.key.toLowerCase()) {
-                    case 'enter':
-                        e.preventDefault();
-                        this.client.generateImage();
-                        break;
-                    case 's':
-                        e.preventDefault();
-                        this.client.saveCurrentConfig();
-                        break;
-                    case 'l':
-                        e.preventDefault();
-                        this.client.loadConfigFromStorage();
-                        break;
-                    case 'e':
-                        e.preventDefault();
-                        this.client.exportConfig();
-                        break;
-                    case 'i':
-                        e.preventDefault();
-                        this.client.importConfig();
-                        break;
-                    case 'z':
-                        e.preventDefault();
-                        this.client.clearAll();
-                        break;
-                    case 'h':
-                        e.preventDefault();
-                        this.client.showHistory();
-                        break;
-                    case 'r':
-                        e.preventDefault();
-                        this.client.reRender();
-                        break;
-                    case 'q':
-                        e.preventDefault();
-                        this.client.toggleQuality();
-                        break;
-                    case 'b':
-                        e.preventDefault();
-                        this.client.toggleBatchMode();
-                        break;
-                    case 't':
-                        e.preventDefault();
-                        this.client.toggleTemplateMode();
-                        break;
-                    case 'y':
-                        e.preventDefault();
-                        this.client.toggleStyleMode();
-                        break;
-                }
-            }
-
-            // Function key shortcuts
-            switch (e.key) {
-                case 'F5':
-                    e.preventDefault();
-                    this.client.generateImage();
-                    break;
-                case 'F6':
-                    e.preventDefault();
-                    this.client.stopGeneration();
-                    break;
-                case 'F7':
-                    e.preventDefault();
-                    this.client.clearAll();
-                    break;
-                case 'F8':
-                    e.preventDefault();
-                    this.client.showHistory();
-                    break;
-                case 'F9':
-                    e.preventDefault();
-                    this.client.toggleQuality();
-                    break;
-                case 'F10':
-                    e.preventDefault();
-                    this.client.toggleBatchMode();
-                    break;
-                case 'F11':
-                    e.preventDefault();
-                    this.toggleFullscreen();
-                    break;
-                case 'F12':
-                    e.preventDefault();
-                    this.openDevTools();
-                    break;
-            }
-        });
-    }
-
-    setupDragAndDrop() {
-        const dropZone = document.body;
-
-        // Prevent default drag behaviors
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, this.preventDefaults, false);
-        });
-
-        // Highlight drop zone when dragging over
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropZone.addEventListener(eventName, this.highlight, false);
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropZone.addEventListener(eventName, this.unhighlight, false);
-        });
-
-        // Handle dropped files
-        dropZone.addEventListener('drop', this.handleDrop.bind(this), false);
-    }
-
-    setupResponsiveHandlers() {
-        // Handle mobile-specific interactions
-        if (this.isMobileDevice()) {
-            this.setupMobileHandlers();
-        }
-    }
-
-    preventDefaults(e) {
+        // Visual feedback on label
+        cb.closest(".toggle-label").classList.toggle("checked", cb.checked);
+        updateAll();
+      });
+      // Also handle click on label itself for robustness
+      cb.closest("label").addEventListener("click", (e) => {
+        // Only handle if the click was on the label text, not the checkbox itself
+        if (e.target === cb) return;
         e.preventDefault();
-        e.stopPropagation();
+        cb.checked = !cb.checked;
+        state[id] = cb.checked;
+        cb.closest(".toggle-label").classList.toggle("checked", cb.checked);
+        updateAll();
+      });
     }
+  });
 
-    highlight(e) {
-        document.body.classList.add('drag-over');
+  // Seed buttons
+  $("randomSeedBtn").addEventListener("click", () => {
+    const seed = Math.floor(Math.random() * 4294967295);
+    $("seedInput").value = seed; state.seed = String(seed); updateAll();
+    notify("Seed: " + seed);
+  });
+  $("clearSeedBtn").addEventListener("click", () => {
+    $("seedInput").value = "";
+    state.seed = "";
+    updateAll();
+  });
+  // FIX: Seed Validation — allow empty to clear seed
+  $("seedInput").addEventListener("input", function () {
+    if (this.value === "") {
+      state.seed = "";
+      buildPrompt();
+      return;
     }
+    let val = parseInt(this.value, 10);
+    if (isNaN(val) || val < 0) val = 0;
+    if (val > 4294967295) val = 4294967295;
+    this.value = val;
+    state.seed = String(val);
+    buildPrompt(); // strictly update text, not full updateAll to avoid focus loss
+  });
 
-    unhighlight(e) {
-        document.body.classList.remove('drag-over');
+  // FIX: Generate 4 vs 3x3 Mutual Exclusion
+  $("generateFourMode").addEventListener("change", function () {
+    if (this.checked && $("grid3x3Mode").checked) {
+      $("grid3x3Mode").click(); // simulate click to trigger logic + visual update
     }
-
-    handleDrop(e) {
-        const dt = e.dataTransfer;
-        const files = dt.files;
-
-        if (files.length > 0) {
-            this.handleFileDrop(files[0]);
-        }
+  });
+  $("grid3x3Mode").addEventListener("change", function () {
+    if (this.checked && $("generateFourMode").checked) {
+      $("generateFourMode").click();
     }
-
-    handleFileDrop(file) {
-        if (file.type.startsWith('image/')) {
-            this.handleImageDrop(file);
-        } else if (file.name.endsWith('.json')) {
-            this.handleConfigDrop(file);
-        } else {
-            this.client.showError('Unsupported file type. Please drop an image or JSON configuration file.');
-        }
-    }
-
-    handleImageDrop(file) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const imageData = e.target.result;
-            this.client.showInfo('Image dropped. You can use this as a reference for your prompt.');
-
-            // Store the image for potential use in generation
-            this.client.state.referenceImage = imageData;
-
-            // Show the dropped image in a preview area if it exists
-            const preview = document.getElementById('image-preview');
-            if (preview) {
-                preview.innerHTML = `
-                    <div class="card">
-                        <div class="card-body">
-                            <h6>Reference Image</h6>
-                            <img src="${imageData}" class="img-fluid" alt="Reference image">
-                            <button class="btn btn-sm btn-outline-danger mt-2" onclick="window.vpeClient.clearReferenceImage()">
-                                <i class="fas fa-trash"></i> Remove
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }
-        };
-        reader.onerror = () => {
-            this.client.showError('Failed to read image file');
-        };
-        reader.readAsDataURL(file);
-    }
-
-    handleConfigDrop(file) {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-            try {
-                const configData = JSON.parse(e.target.result);
-                if (configData.settings) {
-                    this.client.state = { ...this.client.state, ...configData.settings };
-                    this.client.updateUI();
-                    this.client.saveState();
-                    this.client.showInfo('Configuration loaded from dropped file');
-                } else {
-                    this.client.showError('Invalid configuration file format');
-                }
-            } catch (error) {
-                this.client.showError('Failed to load configuration from file: ' + error.message);
-            }
-        };
-        reader.onerror = () => {
-            this.client.showError('Failed to read configuration file');
-        };
-        reader.readAsText(file);
-    }
-
-    isTypingInInput(target) {
-        const tagName = target.tagName.toLowerCase();
-        const type = target.type;
-
-        return (tagName === 'input' && type !== 'checkbox' && type !== 'radio') ||
-            tagName === 'textarea' ||
-            target.isContentEditable;
-    }
-
-    handleWindowResize() {
-        // Update UI layout for responsive design
-        const container = document.querySelector('.container');
-        if (container) {
-            const width = window.innerWidth;
-            if (width < 768) {
-                container.classList.remove('container-lg');
-                container.classList.add('container-fluid');
-            } else {
-                container.classList.remove('container-fluid');
-                container.classList.add('container-lg');
-            }
-        }
-    }
-
-    handleBeforeUnload(e) {
-        if (this.client.isGenerating) {
-            e.preventDefault();
-            e.returnValue = 'Generation is in progress. Are you sure you want to leave?';
-        }
-    }
-
-    handleOnlineStatusChange(isOnline) {
-        if (isOnline) {
-            this.client.showInfo('Connection restored');
-        } else {
-            this.client.showError('Connection lost. Please check your internet connection.');
-        }
-    }
-
-    handleWindowFocus() {
-        // Resume any paused operations
-        if (this.client.isGenerating) {
-            this.client.showInfo('Window focused - generation continues');
-        }
-    }
-
-    handleWindowBlur() {
-        // Pause or warn about generation when window loses focus
-        if (this.client.isGenerating) {
-            this.client.showInfo('Window unfocused - generation continues in background');
-        }
-    }
-
-    setupMobileHandlers() {
-        // Touch-friendly event handlers for mobile devices
-        const buttons = document.querySelectorAll('button');
-        buttons.forEach(btn => {
-            btn.addEventListener('touchstart', (e) => {
-                btn.classList.add('active');
-            }, { passive: true });
-
-            btn.addEventListener('touchend', (e) => {
-                btn.classList.remove('active');
-            }, { passive: true });
-        });
-
-        // Handle mobile keyboard show/hide
-        const viewportHeight = window.innerHeight;
-        window.addEventListener('resize', () => {
-            const newHeight = window.innerHeight;
-            if (Math.abs(viewportHeight - newHeight) > 100) {
-                // Keyboard likely opened/closed
-                this.handleMobileKeyboard(newHeight < viewportHeight);
-            }
-        });
-    }
-
-    handleMobileKeyboard(isOpen) {
-        if (isOpen) {
-            // Adjust UI for mobile keyboard
-            const footer = document.querySelector('footer');
-            if (footer) {
-                footer.style.position = 'static';
-            }
-        } else {
-            // Restore normal UI
-            const footer = document.querySelector('footer');
-            if (footer) {
-                footer.style.position = 'fixed';
-            }
-        }
-    }
-
-    isMobileDevice() {
-        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    }
-
-    toggleFullscreen() {
-        if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen().catch(err => {
-                this.client.showError(`Error attempting to enable full-screen mode: ${err.message}`);
-            });
-        } else {
-            document.exitFullscreen();
-        }
-    }
-
-    openDevTools() {
-        // This is mainly for development purposes
-        if (window.devTools) {
-            window.devTools.open();
-        } else {
-            this.client.showInfo('Developer tools not available in this environment');
-        }
-    }
-
-    // Utility methods for common UI interactions
-    showTooltip(element, text) {
-        // Create tooltip
-        const tooltip = document.createElement('div');
-        tooltip.className = 'tooltip fade show';
-        tooltip.style.position = 'absolute';
-        tooltip.style.zIndex = 1000;
-        tooltip.style.pointerEvents = 'none';
-        tooltip.innerHTML = `<div class="tooltip-inner">${text}</div>`;
-
-        // Position tooltip
-        const rect = element.getBoundingClientRect();
-        tooltip.style.left = `${rect.left + rect.width / 2}px`;
-        tooltip.style.top = `${rect.top - 30}px`;
-
-        document.body.appendChild(tooltip);
-
-        // Remove after delay
-        setTimeout(() => {
-            tooltip.remove();
-        }, 2000);
-    }
-
-    showLoadingSpinner(element) {
-        const spinner = document.createElement('div');
-        spinner.className = 'spinner-border spinner-border-sm';
-        spinner.style.marginRight = '5px';
-
-        element.prepend(spinner);
-        return spinner;
-    }
-
-    hideLoadingSpinner(spinner) {
-        if (spinner && spinner.parentNode) {
-            spinner.parentNode.removeChild(spinner);
-        }
-    }
-
-    animateElement(element, animation) {
-        element.classList.add('animate__animated', `animate__${animation}`);
-        element.addEventListener('animationend', () => {
-            element.classList.remove('animate__animated', `animate__${animation}`);
-        });
-    }
-
-    scrollToElement(element) {
-        element.scrollIntoView({
-            behavior: 'smooth',
-            block: 'center'
-        });
-    }
-
-    // Accessibility handlers
-    setupAccessibility() {
-        // Add ARIA labels to interactive elements
-        const buttons = document.querySelectorAll('button');
-        buttons.forEach(btn => {
-            if (!btn.getAttribute('aria-label')) {
-                btn.setAttribute('aria-label', btn.textContent.trim());
-            }
-        });
-
-        // Handle focus management
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Tab') {
-                this.handleTabNavigation(e);
-            }
-        });
-    }
-
-    handleTabNavigation(e) {
-        // Ensure logical tab order and focus trapping in modals
-        const activeElement = document.activeElement;
-        const modal = document.querySelector('.modal.show');
-
-        if (modal) {
-            const focusableElements = modal.querySelectorAll(
-                'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-            );
-            const firstElement = focusableElements[0];
-            const lastElement = focusableElements[focusableElements.length - 1];
-
-            if (e.shiftKey) {
-                if (document.activeElement === firstElement) {
-                    e.preventDefault();
-                    lastElement.focus();
-                }
-            } else {
-                if (document.activeElement === lastElement) {
-                    e.preventDefault();
-                    firstElement.focus();
-                }
-            }
-        }
-    }
-
-    // Performance monitoring
-    setupPerformanceMonitoring() {
-        // Monitor generation performance
-        let startTime = 0;
-
-        this.client.ws?.addEventListener('message', (event) => {
-            const message = JSON.parse(event.data);
-            if (message.type === 'generation_started') {
-                startTime = performance.now();
-            } else if (message.type === 'generation_completed') {
-                const endTime = performance.now();
-                const duration = endTime - startTime;
-                console.log(`Generation completed in ${duration.toFixed(2)}ms`);
-
-                // Log performance metrics
-                if (window.performance && window.performance.mark) {
-                    window.performance.mark('generation-complete');
-                }
-            }
-        });
-    }
-
-    // Error boundary handler
-    handleError(error, context) {
-        console.error(`Error in ${context}:`, error);
-
-        // Show user-friendly error message
-        this.client.showError(`An error occurred: ${error.message || 'Unknown error'}`);
-
-        // Log error for debugging
-        if (window.gtag) {
-            window.gtag('event', 'exception', {
-                description: error.message,
-                fatal: false
-            });
-        }
-    }
+  });
 }
 
-// Export for use in main client
-window.EventHandlers = EventHandlers;
+function handleInput() { updateAll(); }
+
+
+  const SECTION_MAP = {
+    "aiModel": "aiModelSection",
+    "cameraBody": "cameraSectionV2",
+    "lens": "lensSectionV2",
+    "focalLength": "apertureSection",
+    "shotSize": "apertureSection",
+    "medium": "artStyleSectionV2",
+    "aperture": "apertureSection",
+    "angle": "apertureSection",
+    "composition": "compositionSectionV2",
+    "filmStock": "filmStockSection",
+    "lighting": "lightingSectionV2",
+    "timeOfDay": "lightingSectionV2",
+    "lightFX": "lightingSectionV2",
+    "colorPalette": "paletteSectionV2",
+    "mood": "moodSectionV2",
+    "skinDetail": "skinDetailSection",
+    "hairDetail": "hairDetailSection",
+    "material": "materialSection",
+    "typography": "typographySection",
+    "photoStyle": "photoStyleSection",
+    "cinemaStyle": "cinemaStyleSection",
+    "directorStyle": "directorStyleSection",
+    "format": "formatSection",
+    "purpose": "purposeSection",
+    "referenceImages": "referencesSection",
+    "negativePrompt": "negativeSection",
+    "emotion": "emotionSection",
+    "ambience": "audioSectionV2",
+    "foley": "audioSectionV2",
+    "cinematicFx": "audioSectionV2",
+    "artStyle": "artStyleSectionV2"
+  };
+
+  export function toggleSection(header, forceState = null) {
+    const section = header.parentElement;
+    if (!section) return;
+
+    if (forceState !== null) {
+      if (forceState === true) section.classList.remove('collapsed'); // Open
+      else section.classList.add('collapsed'); // Close
+    } else {
+      section.classList.toggle('collapsed');
+    }
+  }
+
+  export function initCollapsible() {
+    const sections = document.querySelectorAll('.section');
+
+    // STRICT INITIAL STATE: 
+    // Open: Quick Presets, Presets. 
+    // Closed: Everything else.
+
+    sections.forEach(sec => {
+      const header = sec.querySelector('.section-header');
+      if (!header) return;
+
+      // Bind click robustly even if HTML already contains data-bound="true".
+      // Some saved HTML snapshots persist this attribute and otherwise block binding.
+      if (header.__vpeCollapseHandler) {
+        header.removeEventListener('click', header.__vpeCollapseHandler);
+      }
+      header.__vpeCollapseHandler = (e) => {
+        if (e.target.closest('.help-tip') || e.target.closest('.mode-badge') || e.target.closest('input') || e.target.closest('button')) return;
+        toggleSection(header);
+      };
+      header.addEventListener('click', header.__vpeCollapseHandler);
+      header.dataset.bound = "true";
+
+      // Initial State
+      // FIX: Removed jsonSection from default open list
+      if (sec.id === 'quickStyleSection' || sec.id === 'presetsSection' || sec.id === 'generationModeSection' || sec.id === 'promptSection') {
+        sec.classList.remove('collapsed');
+      } else {
+        sec.classList.add('collapsed');
+      }
+    });
+    console.log('VPE: Strict collapsible state applied.');
+  }
+
+  // Expose: Expand related sections for PRESETS
+  export function expandRelatedSections (presetValues) {
+    // 1. Collapse all param sections (keep nav sections open)
+    document.querySelectorAll('.section').forEach(sec => {
+      if (sec.id === 'quickStyleSection' || sec.id === 'presetsSection' || sec.id === 'generationModeSection') return;
+      sec.classList.add('collapsed');
+    });
+
+    // 2. Open Related
+    const keys = Object.keys(presetValues);
+
+    // Always open Core
+    document.getElementById('aiModelSection')?.classList.remove('collapsed');
+    document.getElementById('descriptionSection')?.classList.remove('collapsed');
+
+    keys.forEach(k => {
+      if (SECTION_MAP[k]) {
+        const el = document.getElementById(SECTION_MAP[k]);
+        if (el && presetValues[k]) el.classList.remove('collapsed');
+      }
+      // LightType special
+      if (k === 'lightType' && (presetValues[k].primary || presetValues[k].accent)) {
+        document.getElementById('lightingSection')?.classList.remove('collapsed');
+      }
+    });
+  };
+
+  // Expose: Expand for QUICK STYLE
+  export function expandSectionsForQuickStyle (isActive) {
+    if (!isActive) return; // If unselected, do nothing or user preference? Let's leave as is.
+
+    // When Quick Style is Active:
+    // Open: Quick Style, AI Model, Aspect Ratio, Resolution, Generation Mode.
+    // Close: All artistic controls (Camera, Lighting, Styles, etc) as they are disabled/locked.
+
+    const keepOpen = [
+      'quickStyleSection',
+      'aiModelSection',
+      'aspectRatioSection',
+      'descriptionSection',
+      'generationModeSection',
+      'promptSection',
+      'jsonSection'
+    ];
+
+    document.querySelectorAll('.section').forEach(sec => {
+      if (keepOpen.includes(sec.id)) {
+        sec.classList.remove('collapsed');
+      } else {
+        sec.classList.add('collapsed');
+      }
+    });
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initCollapsible);
+  } else {
+    initCollapsible();
+  }
+  window.resetAll = resetAll; // Expose for verification
+  window.buildStructuredPrompt = buildStructuredPrompt; // Expose for verification
+
+
+
