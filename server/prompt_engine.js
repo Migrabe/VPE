@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const clientLogicPath = path.join(__dirname, "client_logic.js");
+const clientLogicPath = path.join(__dirname, "..", "public", "js", "client_logic_full.js");
 const CLIENT_LOGIC = fs.readFileSync(clientLogicPath, "utf8");
 
 /**
