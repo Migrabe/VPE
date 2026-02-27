@@ -1,5 +1,5 @@
 (function () {
-  const CONFIG_URL = window.UI_BUTTONS_URL || "/api/ui/buttons";
+  const CONFIG_URL = window.UI_BUTTONS_URL || "./config/ui-buttons.json";
 
   function resolveActionHandler(actionName) {
     const explicit = window.uiActionHandlers && window.uiActionHandlers[actionName];
