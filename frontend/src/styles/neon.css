@@ -1,0 +1,50 @@
+/* Ambient orbs */
+.orb {
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(100px);
+    pointer-events: none;
+    z-index: -1;
+}
+
+.orb1 {
+    width: 500px;
+    height: 500px;
+    background: rgba(0, 212, 255, 0.06);
+    top: -100px;
+    right: -100px;
+}
+
+.orb2 {
+    width: 400px;
+    height: 400px;
+    background: rgba(124, 58, 255, 0.06);
+    bottom: 100px;
+    left: -100px;
+}
+
+/* Icon colours for cards */
+.icon-purple {
+    background: rgba(108, 92, 231, .15);
+    color: var(--accent-light);
+}
+
+.icon-blue {
+    background: rgba(100, 180, 246, .15);
+    color: #64b5f6;
+}
+
+.icon-green {
+    background: var(--green-glow);
+    color: var(--green);
+}
+
+.icon-orange {
+    background: var(--orange-glow);
+    color: var(--orange);
+}
+
+.icon-red {
+    background: rgba(255, 118, 117, .15);
+    color: var(--red);
+}

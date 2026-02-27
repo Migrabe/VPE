@@ -1,0 +1,126 @@
+{
+  "version": "1.2",
+  "buttons": {
+    "header-reset": {
+      "label": "Сброс",
+      "icon": "↺",
+      "title": "Сбросить все параметры",
+      "styles": {
+        "borderColor": "var(--red)",
+        "color": "var(--red)",
+        "background": "rgba(255,118,117,0.1)"
+      },
+      "action": { "type": "call", "name": "resetAll" }
+    },
+    "translate": {
+      "label": "Перевести на EN",
+      "icon": "🌐",
+      "styles": {
+        "minWidth": "auto",
+        "padding": "6px 14px",
+        "fontSize": ".82em"
+      },
+      "action": { "type": "call", "name": "translateScene" }
+    },
+    "enhance": {
+      "label": "Улучшить AI",
+      "icon": "✦",
+      "styles": {
+        "minWidth": "auto",
+        "padding": "6px 14px",
+        "fontSize": ".82em",
+        "color": "var(--accent-k)",
+        "borderColor": "rgba(0,212,255,0.3)"
+      },
+      "action": { "type": "call", "name": "enhancePrompt" }
+    },
+    "seed-random": {
+      "label": "Random",
+      "icon": "🎲",
+      "styles": {
+        "minWidth": "auto",
+        "padding": "8px 12px",
+        "fontSize": ".82em"
+      }
+    },
+    "seed-clear": {
+      "label": "",
+      "icon": "✕",
+      "styles": {
+        "minWidth": "auto",
+        "padding": "8px 12px",
+        "fontSize": ".82em"
+      }
+    },
+    "format-flat": {
+      "label": "Flat (рекомендуется)",
+      "attrs": { "data-format": "flat" },
+      "action": { "type": "call", "name": "setPromptFormat", "args": ["flat"] }
+    },
+    "format-structured": {
+      "label": "Structured",
+      "attrs": { "data-format": "structured" },
+      "action": { "type": "call", "name": "setPromptFormat", "args": ["structured"] }
+    },
+    "format-midjourney": {
+      "label": "Midjourney",
+      "attrs": { "data-format": "midjourney" },
+      "action": { "type": "call", "name": "setPromptFormat", "args": ["midjourney"] }
+    },
+    "send-n8n": {
+      "label": "Отправить в n8n",
+      "icon": "🚀",
+      "styles": {
+        "background": "linear-gradient(45deg, #FF6B6B, #F06595)",
+        "color": "white",
+        "border": "none",
+        "fontWeight": "bold"
+      }
+    },
+    "copy-prompt": {
+      "label": "Копировать",
+      "icon": "📋"
+    },
+    "compact": {
+      "label": "Компакт",
+      "icon": "⚡",
+      "title": "Свести промпт к минимально нужному ядру"
+    },
+    "save": {
+      "label": "Сохранить",
+      "icon": "💾"
+    },
+    "reset": {
+      "label": "Сброс",
+      "icon": "🗑️"
+    },
+    "load-template": {
+      "label": "Загрузить",
+      "icon": "📂"
+    },
+    "save-template": {
+      "label": "Сохранить",
+      "icon": "💾"
+    },
+    "load-style": {
+      "label": "Загрузить",
+      "icon": "📂"
+    },
+    "save-style": {
+      "label": "Сохранить",
+      "icon": "💾"
+    },
+    "export": {
+      "label": "Экспорт",
+      "icon": "📤"
+    },
+    "import": {
+      "label": "Импорт",
+      "icon": "📥"
+    },
+    "history": {
+      "label": "История",
+      "icon": "📜"
+    }
+  }
+}
